@@ -7,71 +7,66 @@ from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter  # to print to tensorboard
 
-mydict = {'1': 1.,
-          '2': 2.,
-          '3': 3.,
-          '4': 4.,
-          '5': 5.,
-          '6': 6.,
-          '7': 7.,
-          '8': 8.,
-          '9': 9.,
-          '0': 10.,
-          '+': 11.,
-          '-': 12.,
-          '*': 13.,
-          '/': 14.,
-          '=': 15.
-         }
+# Set dimension of problem, length of string
 
-mydict_inverted = {1.: "1",
-                   2.: "2",
-                   3.: "3",
-                   4.: "4",
-                   5.: "5",
-                   6.: "6",
-                   7.: "7",
-                   8.: "8",
-                   9.: "9",
-                   10.: "0",
-                   11.: "+",
-                   12.: "-",
-                   13.: "*",
-                   14.: "/",
-                   15.: "=",
-                   0.: " "
-                  }
+char_list = [' ',
+             '1',
+             '2',
+             '3',
+             '4',
+             '5',
+             '6',
+             '7',
+             '8',
+             '9',
+             '0',
+             '+',
+             '-',
+             '*',
+             '/',
+             '=',
+            ]
+problem_dim = 20 * len(char_list)
 
 def problem_to_tensor(problem_string):
+    alphabet_size = len(char_list)
     outlist = []
     for char in problem_string:
-        outlist.append(mydict[char])
-    for _ in range(0, 20-len(problem_string)):
-        outlist.append(0)
+        print(char)
+        inner_list = [0.] * alphabet_size
+        inner_list[char_list.index(char)] = 1.
+        print(inner_list)
+        outlist.append(inner_list)
+    for _ in range(0, problem_dim-len(outlist)):
+        inner_list = [0.] * alphabet_size
+        outlist.append(inner_list)
+    print("-----")
     t = torch.as_tensor(outlist)
     return t
 
 def tensor_to_problem(t):
     inlist = t.tolist()
+    #print(inlist)
     outstring = ""
-    for myvalue in inlist[0]:
-        #print(myvalue)
-        #print(mydict_inverted[myvalue])
-        outstring += mydict_inverted[myvalue] 
+    for sublist in inlist:
+        print(len(sublist))
+        index = sublist.index(max(sublist))
+        print(index)
+        outstring += char_list[index]
     outstring = outstring.strip()
     return outstring
 
 class Discriminator(nn.Module):
-    def __init__(self, in_features):
+    def __init__(self, problem_dim):
         super().__init__()
         self.disc = nn.Sequential(
             # Takes 20 digits as in_features
             # Can the 20 be replaced with problem_dim?
-            nn.Linear(in_features, 20),
+            nn.Linear(problem_dim, 128),
             #Activation function
             nn.LeakyReLU(0.01),
             # One output node, 0 for fake, 1 for real
-            nn.Linear(20, 1),
+            nn.Linear(128, 1),
             # Makes sure that the node has a value between 0 and 1
             nn.Sigmoid(),
         )
@@ -105,8 +100,6 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 lr = 3e-4
 # noise dimension (play with this as well)
 z_dim = 64 #try 128, 256
-# Set dimension of problem, length of string
-problem_dim = 20
 batch_size = 1
 num_epochs = 50
 
@@ -133,7 +126,6 @@ class ProblemDataset(Dataset):
         return problem_tensor
 
 input_problems = ['32+90', '24+13', '93+03', '17+18', '68+03', '22+11', '50+50', '47+93', '08+29', '73+12']
-# Not sure how transform ToTensor works, need an implementation later.
 dataset = ProblemDataset(problem_list = input_problems)
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 opt_disc = optim.Adam(disc.parameters(), lr=lr)
@@ -146,7 +138,7 @@ step = 0
 for epoch in range(num_epochs):
     for batch_idx, real in enumerate(loader):
         # Keep current batch number, flatten real to size of 20
-        real = real.view(-1, 20).to(device)
+        real = real.view(-1, problem_dim).to(device)
         batch_size = real.shape[0]
 
         ### Train Discriminator: max log(D(x)) + log(1 - D(G(z)))
@@ -177,22 +169,12 @@ for epoch in range(num_epochs):
             )
 
             with torch.no_grad():
-                fake = gen(fixed_noise).reshape(-1, 20)
+                fake = gen(fixed_noise).reshape(-1, problem_dim)
                 # I think that data is the problem that the model was trained on
-                data = real.reshape(-1, 20)
-                #print(tensor_to_problem(fake))
-                print(tensor_to_problem(data))
+                data = real.reshape(-1, problem_dim)
+                print(tensor_to_problem(fake))
+                print("--Output--------" + str(tensor_to_problem(data)))
                 
-                # img_grid_fake = torchvision.utils.make_grid(fake, normalize=True)
-                # img_grid_real = torchvision.utils.make_grid(data, normalize=True)
                 #print(fake)
-                # print(data)
-                """
-                writer_fake.add_image(
-                    "Mnist Fake Images", img_grid_fake, global_step=step
-                )
-                writer_real.add_image(
-                    "Mnist Real Images", img_grid_real, global_step=step
-                )
-                """
+                #print(data)
                 step += 1
