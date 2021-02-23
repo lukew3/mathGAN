@@ -1,15 +1,29 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision
-import torchvision.datasets as datasets
-from torch.utils.data import DataLoader, Dataset
-import torchvision.transforms as transforms
-from torch.utils.tensorboard import SummaryWriter  # to print to tensorboard
+#!/usr/bin/env python
+# coding: utf-8
 
-# Set dimension of problem, length of string
+# In[1]:
 
-char_list = [' ',
+
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Reshape, Dropout, Dense 
+from tensorflow.keras.layers import Flatten, BatchNormalization
+from tensorflow.keras.layers import Activation, ZeroPadding2D
+from tensorflow.keras.layers import LeakyReLU
+from tensorflow.keras.layers import UpSampling2D, Conv2D
+from tensorflow.keras.models import Sequential, Model, load_model
+from tensorflow.keras.optimizers import Adam
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+import os 
+import time
+import matplotlib.pyplot as plt
+
+
+# In[2]:
+
+
+translate_list = [' ',
              '1',
              '2',
              '3',
@@ -26,155 +40,167 @@ char_list = [' ',
              '/',
              '=',
             ]
-problem_dim = 20 * len(char_list)
-
-def problem_to_tensor(problem_string):
-    alphabet_size = len(char_list)
-    outlist = []
-    for char in problem_string:
-        print(char)
-        inner_list = [0.] * alphabet_size
-        inner_list[char_list.index(char)] = 1.
-        print(inner_list)
-        outlist.append(inner_list)
-    for _ in range(0, problem_dim-len(outlist)):
-        inner_list = [0.] * alphabet_size
-        outlist.append(inner_list)
-    print("-----")
-    t = torch.as_tensor(outlist)
-    return t
-
-def tensor_to_problem(t):
-    inlist = t.tolist()
-    #print(inlist)
-    outstring = ""
-    for sublist in inlist:
-        print(len(sublist))
-        index = sublist.index(max(sublist))
-        print(index)
-        outstring += char_list[index]
-    outstring = outstring.strip()
-    return outstring
-
-class Discriminator(nn.Module):
-    def __init__(self, problem_dim):
-        super().__init__()
-        self.disc = nn.Sequential(
-            # Takes 20 digits as in_features
-            # Can the 20 be replaced with problem_dim?
-            nn.Linear(problem_dim, 128),
-            #Activation function
-            nn.LeakyReLU(0.01),
-            # One output node, 0 for fake, 1 for real
-            nn.Linear(128, 1),
-            # Makes sure that the node has a value between 0 and 1
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        return self.disc(x)
 
 
-class Generator(nn.Module):
-    # z_dim is the dimenion of the noise
-    # problem_dim is the dimension of the output (length of string)
-    def __init__(self, z_dim, problem_dim):
-        super().__init__()
-        self.gen = nn.Sequential(
-            # I think that 256 is just random to expand the noise
-            # 256 = 64*4
-            nn.Linear(z_dim, 256),
-            nn.LeakyReLU(0.01),
-            nn.Linear(256, problem_dim),
-            # normalize inputs to [-1, 1] so make outputs [-1, 1]
-            nn.Tanh()
-        )
-
-    def forward(self, x):
-        return self.gen(x)
+# In[3]:
 
 
-# Hyperparameters etc.
-device = "cuda" if torch.cuda.is_available() else "cpu"
-#learning rate ( play around with this if you want)
-lr = 3e-4
-# noise dimension (play with this as well)
-z_dim = 64 #try 128, 256
-batch_size = 1
-num_epochs = 50
+CHAR_LIST_LEN = len(translate_list)
+PROBLEM_LENGTH = 5
+PROBLEM_DIM = PROBLEM_LENGTH * CHAR_LIST_LEN
 
-disc = Discriminator(problem_dim).to(device)
-gen = Generator(z_dim, problem_dim).to(device)
-fixed_noise = torch.randn((batch_size, z_dim)).to(device)
-# Params of Normalize are mean and standard deviation of dataset
-transforms = transforms.Compose(
-    [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,)),]
-)
+SEED_SIZE = 1000
 
-class ProblemDataset(Dataset):
-    def __init__(self, problem_list, transform=None):
-        self.problem_list = problem_list
-        self.transform = transform
+N_EPOCHS = 20
+BATCH_SIZE = 50
+BUFFER_SIZE = 60000
 
-    def __len__(self):
-        return len(self.problem_list)
 
-    def __getitem__(self, index):
-        problem_string = self.problem_list[index]
-        problem_tensor = problem_to_tensor(problem_string)
+# In[4]:
 
-        return problem_tensor
 
-input_problems = ['32+90', '24+13', '93+03', '17+18', '68+03', '22+11', '50+50', '47+93', '08+29', '73+12']
-dataset = ProblemDataset(problem_list = input_problems)
-loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-opt_disc = optim.Adam(disc.parameters(), lr=lr)
-opt_gen = optim.Adam(gen.parameters(), lr=lr)
-criterion = nn.BCELoss()
-writer_fake = SummaryWriter(f"logs/fake")
-writer_real = SummaryWriter(f"logs/real")
-step = 0
+def prob_to_array(in_string):
+    problem_array = []
+    for char in in_string:
+        value = translate_list.index(char)
+        char_array = [0]*CHAR_LIST_LEN
+        char_array[value] = 1
+        problem_array.append(char_array)
+    if len(in_string) < PROBLEM_LENGTH:
+        for _ in range(PROBLEM_LENGTH-len(in_string)):
+            char_array = [0]*CHAR_LIST_LEN
+            char_array[0] = 1
+            problem_array.append(char_array)
+    return problem_array
 
-for epoch in range(num_epochs):
-    for batch_idx, real in enumerate(loader):
-        # Keep current batch number, flatten real to size of 20
-        real = real.view(-1, problem_dim).to(device)
-        batch_size = real.shape[0]
+def array_to_prob(problem_array):
+    problem_string = ""
+    for char_array in problem_array:
+        largest = max(char_array)
+        value = char_array.index(largest)
+        char = translate_list[value]
+        problem_string += char
+    problem_string.strip()
+    return problem_string
 
-        ### Train Discriminator: max log(D(x)) + log(1 - D(G(z)))
-        noise = torch.randn(batch_size, z_dim).to(device)
-        fake = gen(noise)
-        disc_real = disc(real).view(-1)
-        lossD_real = criterion(disc_real, torch.ones_like(disc_real))
-        disc_fake = disc(fake).view(-1)
-        lossD_fake = criterion(disc_fake, torch.zeros_like(disc_fake))
-        lossD = (lossD_real + lossD_fake) / 2
-        disc.zero_grad()
-        lossD.backward(retain_graph=True)
-        opt_disc.step()
+#myarr = prob_to_array('90+21')
+#myprob = array_to_prob(myarr)
+#print(myarr)
+#print(myprob)
 
-        ### Train Generator: min log(1 - D(G(z))) <-> max log(D(G(z))
-        # where the second option of maximizing doesn't suffer from
-        # saturating gradients
-        output = disc(fake).view(-1)
-        lossG = criterion(output, torch.ones_like(output))
-        gen.zero_grad()
-        lossG.backward()
-        opt_gen.step()
 
-        if batch_idx == 0:
-            print(
-                f"Epoch [{epoch}/{num_epochs}] Batch {batch_idx}/{len(loader)} \
-                      Loss D: {lossD:.4f}, loss G: {lossG:.4f}"
-            )
+# In[5]:
 
-            with torch.no_grad():
-                fake = gen(fixed_noise).reshape(-1, problem_dim)
-                # I think that data is the problem that the model was trained on
-                data = real.reshape(-1, problem_dim)
-                print(tensor_to_problem(fake))
-                print("--Output--------" + str(tensor_to_problem(data)))
-                
-                #print(fake)
-                #print(data)
-                step += 1
+
+import random
+def generate_input(count):
+    output_list = []
+    for _ in range(count):
+        left = random.randint(10,99)
+        right = random.randint(10,99)
+        problem = str(left) + '+' + str(right)
+        output_list.append(problem)
+    return output_list
+
+
+# In[6]:
+
+
+input_problems = generate_input(1000)
+# print(input_problems)
+training_data = []
+for item in input_problems:
+    temp_arr = prob_to_array(item)
+    training_data.append(temp_arr)
+training_data = np.asarray(training_data)
+training_data = training_data.astype(np.float32)
+print("Shape: " + str(training_data.shape))
+
+
+# In[7]:
+
+
+train_dataset = tf.data.Dataset.from_tensor_slices(training_data)     .shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
+
+
+# In[8]:
+
+
+generator = Sequential([
+    Dense(64,activation="relu",input_dim=SEED_SIZE),
+    Dense(128, activation="selu"),
+    #model.add(Dense(28*28, activation="sigmoid")),
+    Dense(PROBLEM_LENGTH*CHAR_LIST_LEN, activation="sigmoid"),
+    Reshape([PROBLEM_LENGTH, CHAR_LIST_LEN])
+])
+
+discriminator = Sequential([
+    Flatten(input_shape=[PROBLEM_LENGTH, CHAR_LIST_LEN]),
+    Dense(128, activation="selu"),
+    Dense(64, activation="selu"),
+    Dense(1, activation="sigmoid")
+])
+
+
+# In[9]:
+
+
+discriminator.compile(loss="binary_crossentropy", optimizer="rmsprop")
+gan = Sequential([generator, discriminator])
+gan.compile(loss="binary_crossentropy", optimizer="rmsprop")
+
+
+# In[10]:
+
+
+def display_problems(fake_problems):
+    numpy_array = fake_problems.numpy()
+    # print(numpy_array)
+    for prob_array in numpy_array:
+        py_array = prob_array.tolist()
+        prob_string = array_to_prob(py_array)
+        print(prob_string)
+    # print(fake_problems.shape)
+
+
+# In[11]:
+
+
+
+"""
+Generator not random enough
+Sometimes there is one character that persists when it shouldnt
+Maybe increase size of random input
+"""
+for epoch in range(N_EPOCHS):
+    for real_problems in train_dataset:
+        print("------------------------------")
+        # print("Real Problems: " + str(real_problems.shape))
+        noise = tf.random.normal(shape=[BATCH_SIZE, SEED_SIZE])
+        # print("Noise: " + str(noise.shape))
+        fake_problems = generator(noise)
+        #print("Real: ")
+        #display_problems(real_problems)
+        print("Fakes: ")
+        display_problems(fake_problems)
+        mixed_problems = tf.concat([fake_problems, real_problems], axis=0)
+        # print("Mixed problems: " + str(mixed_problems.shape))
+        discriminator_labels = tf.constant([[0.]] * BATCH_SIZE + [[1.]] * BATCH_SIZE)
+        # print("Discrim labels: " + str(discriminator_labels.shape))
+        discriminator.trainable = True
+        print("Discriminator loss: " + str(discriminator.train_on_batch(mixed_problems, discriminator_labels)))
+        #discriminator.train_on_batch(mixed_problems, discriminator_labels)
+        #print("Discriminator summary: " + str(discriminator.summary()))
+        noise = tf.random.normal(shape=[BATCH_SIZE, SEED_SIZE])
+        generator_labels = tf.constant([[1.]] * BATCH_SIZE)
+        discriminator.trainable = False
+        print("Generator loss: " + str(gan.train_on_batch(noise, generator_labels)))
+        #gan.train_on_batch(noise, generator_labels)
+        # print("GAN summary: " + str(gan.summary()))
+
+
+# In[ ]:
+
+
+
+
